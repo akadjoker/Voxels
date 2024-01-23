@@ -3,10 +3,10 @@
 /*                                                        :::      ::::::::   */
 /*   utils.hpp                                          :+:      :+:    :+:   */
 /*                                                    +:+ +:+         +:+     */
-/*   By: djoker <djoker@student.42.fr>              +#+  +:+       +#+        */
+/*   By: lrosa-do <lrosa-do@student.42lisboa>       +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2023/02/14 16:51:37 by lrosa-do          #+#    #+#             */
-/*   Updated: 2024/01/18 19:00:28 by djoker           ###   ########.fr       */
+/*   Updated: 2024/01/23 18:41:32 by lrosa-do         ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -131,6 +131,38 @@ struct Vector3
     {
        return sqrt( (v.x-x)*(v.x-x) + (v.y-y)*(v.y-y) + (v.z-z)*(v.z-z) );
     }   
+    float DistanceSquared(const Vector3& v) const 
+    {
+       return (v.x-x)*(v.x-x) + (v.y-y)*(v.y-y) + (v.z-z)*(v.z-z);
+    }
+    float Length() const 
+    {
+        return sqrt(x*x + y*y + z*z);
+    }
+    float LengthSquared() const 
+    {
+        return x*x + y*y + z*z;
+    }
+    void Normalize() 
+    {
+        float length = Length();
+        x /= length;
+        y /= length;
+        z /= length;
+    }
+    Vector3 Normalized() const 
+    {
+        float length = Length();
+        return Vector3(x / length, y / length, z / length);
+    }
+    float Dot(const Vector3& other) const 
+    {
+        return x * other.x + y * other.y + z * other.z;
+    }
+    Vector3 Cross(const Vector3& other) const 
+    {
+        return Vector3(y * other.z - z * other.y, z * other.x - x * other.z, x * other.y - y * other.x);
+    }
     bool operator==(const Vector3& other) const 
     {
         return x == other.x && y == other.y && z == other.z;
@@ -169,6 +201,17 @@ struct Vector3
     Vector3 operator/(float other) const 
     {
         return Vector3(x / other, y / other, z / other);
+    }
+    Vector3 operator-() const 
+    {
+        return Vector3(-x, -y, -z);
+    }
+    Vector3& operator+=(const Vector3& other) 
+    {
+        x += other.x;
+        y += other.y;
+        z += other.z;
+        return *this;
     }
     
     
@@ -266,12 +309,12 @@ struct BoundingBox
 
     BoundingBox()
     {
-            min.x=-1;
-            min.y=-1;
-            min.z=-1;
-            max.x=1;
-            max.y=1;
-            max.z=1;
+            min.x=9999999;
+            min.y=9999999;
+            min.z=9999999;
+            max.x=-9999999;
+            max.y=-9999999;
+            max.z=-9999999;
     }
 
     void addInternalPoint(float x, float y, float z)
@@ -304,6 +347,28 @@ struct BoundingBox
             if (point.z > max.z)
                 max.z = point.z;
         }
+
+        bool IsPointInBox(const Vector3 &v)
+        {
+            if (v.x < min.x || v.x > max.x)
+                return false;
+            if (v.y < min.y || v.y > max.y)
+                return false;
+            if (v.z < min.z || v.z > max.z)
+                return false;
+            return true;
+        }
+        bool Contains(const BoundingBox &other) const
+        {
+            if (other.min.x < min.x || other.max.x > max.x)
+                return false;
+            if (other.min.y < min.y || other.max.y > max.y)
+                return false;
+            if (other.min.z < min.z || other.max.z > max.z)
+                return false;
+            return true;
+        }
+        
 
        Vector3 getCenter() const
         {
@@ -425,6 +490,7 @@ unsigned int LoadTexture(const unsigned char *data, int width, int height, Pixel
 unsigned int LoadImageToGL(const char *fileName);
 unsigned int LoadTextureArray(const unsigned char *data,int atlasWidth, int atlasHeight, int gridWidth , int gridHeight, PixelFormat format);
 unsigned int LoadImageToGLArray(const char *fileName, int gridWidth , int gridHeight);
+unsigned int LoadCubemap(std::vector<std::string> faces);
 
 void UnloadVertexArray(unsigned int vaoId);
 void UnloadVertexBuffer(unsigned int vboId);

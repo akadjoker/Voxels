@@ -6,15 +6,18 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include "Camera.h"
-#include "FastNoise.h"
 
-#define FNL_IMPL
-#include "fastnoiselite.h"
+#include "Noise.hpp"
+#include "FastNoiseLite.h"
+
+
+
 
 
 
 unsigned int SCR_WIDTH = 1024;
 unsigned int SCR_HEIGHT = 720;
+const float MAX_DISTANCE = 1500.0f;
 
 #define MAX_BATCH_ELEMENTS  8192
 
@@ -26,6 +29,15 @@ float fogEnd = 1000.0;
 float fogDensity = 0.01;
 
 Color fogColor(0.2*255,0.2*255,0.2*255);
+FastNoiseLite noise;
+
+
+float scale1 = 0.2f;
+float scale2 = 0.267f;
+float scale3 = 0.130f;
+int seed = 1337;
+
+
 
 SDL_Window *window;
 SDL_GLContext context;
@@ -172,9 +184,224 @@ bool Run()
 }
 
 
-const int CHUNK_SIZE = 16;
-//5 chunks 
-const int SIZE = 128;//8 * CHUNK_SIZE;
+const int CHUNK_SIZE = 32;
+const int SIZE = 128;// * CHUNK_SIZE;
+const int CHUNK_HEIGHT = 256;
+
+Noise perlinNoise(1337);
+struct SkyBox 
+{
+    void Init()
+    {
+        const char *defaultVShaderCode =R"(
+            #version 320 es                       
+            precision mediump float;           
+            layout (location = 0) in vec3 aPos;
+
+                out vec3 TexCoords;
+
+                uniform mat4 projection;
+                uniform mat4 view;
+
+                void main()
+                {
+                    TexCoords = aPos;
+                    mat4 v = mat4(mat3(view));
+                    gl_Position = projection * v * vec4(aPos, 1.0);
+                }  
+
+            )";
+
+           const char *defaultFShaderCode =R"(
+            #version 320 es      
+
+                precision mediump float; 
+                out vec4 FragColor;
+
+                in vec3 TexCoords;
+
+                uniform samplerCube skybox;
+                uniform vec3 color;
+                uniform bool underwater;
+                uniform float colorDensity ;
+
+                void main()
+                {    
+                    vec3 skyboxColor = texture(skybox, TexCoords).rgb;
+                    if (underwater)
+                    {
+                        skyboxColor =  color;
+                    } else 
+                    {
+                        skyboxColor = mix(skyboxColor, color, colorDensity);
+                    
+                    }
+                    FragColor = vec4(skyboxColor, 1.0);
+                }
+
+                )";
+
+        unsigned int vShaderId = 0;
+        unsigned int fShaderId = 0;
+        
+
+        vShaderId = CompileShader(defaultVShaderCode, GL_VERTEX_SHADER);
+        fShaderId = CompileShader(defaultFShaderCode, GL_FRAGMENT_SHADER);
+        if (vShaderId != 0 && fShaderId != 0)
+        {
+            shaderProgram = LoadShaderProgram(vShaderId, fShaderId);
+            if (shaderProgram != 0)
+            {
+                Log(0, "SHADER: [ID %i] skybox shader loaded successfully", shaderProgram);
+
+                glDeleteShader(vShaderId);
+                glDeleteShader(fShaderId);
+            }
+        } else 
+        {
+            Log(2,"SHADER: Failed to load skybox shader");
+            return ;
+        }
+
+        uniformProj       = glGetUniformLocation(shaderProgram, "projection");
+        uniformView       = glGetUniformLocation(shaderProgram, "view");
+        uniformTexture0 = glGetUniformLocation(shaderProgram, "skybox");
+        uniformColor = glGetUniformLocation(shaderProgram, "color");
+        uniformUnderwater = glGetUniformLocation(shaderProgram, "underwater");
+        uniformColorForce = glGetUniformLocation(shaderProgram, "colorDensity");
+        float size=MAX_DISTANCE /4.0f;
+        float skyboxVertices[] = 
+        {
+    // positions          
+    -size,  size, -size,
+    -size, -size, -size,
+     size, -size, -size,
+     size, -size, -size,
+     size,  size, -size,
+    -size,  size, -size,
+
+    -size, -size,  size,
+    -size, -size, -size,
+    -size,  size, -size,
+    -size,  size, -size,
+    -size,  size,  size,
+    -size, -size,  size,
+
+     size, -size, -size,
+     size, -size,  size,
+     size,  size,  size,
+     size,  size,  size,
+     size,  size, -size,
+     size, -size, -size,
+
+    -size, -size,  size,
+    -size,  size,  size,
+     size,  size,  size,
+     size,  size,  size,
+     size, -size,  size,
+    -size, -size,  size,
+
+    -size,  size, -size,
+     size,  size, -size,
+     size,  size,  size,
+     size,  size,  size,
+    -size,  size,  size,
+    -size,  size, -size,
+
+    -size, -size, -size,
+    -size, -size,  size,
+     size, -size, -size,
+     size, -size, -size,
+    -size, -size,  size,
+     size, -size,  size
+};
+
+       
+        glGenVertexArrays(1, &VAO);
+        glBindVertexArray(VAO);
+        
+        glGenBuffers(1, &VBO);
+        
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), skyboxVertices, GL_STATIC_DRAW);
+        
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, 0, 3 * sizeof(float), 0);
+
+        glBindVertexArray(0);
+        std::vector<std::string> faces;
+        faces.push_back("assets/skybox/right.jpg");
+        faces.push_back("assets/skybox/left.jpg");
+        faces.push_back("assets/skybox/top.jpg");
+        faces.push_back("assets/skybox/bottom.jpg");
+        faces.push_back("assets/skybox/front.jpg");
+        faces.push_back("assets/skybox/back.jpg");
+
+
+        defaultTextureId = LoadCubemap(faces);
+
+    }
+    void Free()
+    {
+        glDeleteVertexArrays(1, &VAO);
+        glDeleteBuffers(1, &VBO);
+        glDeleteTextures(1, &defaultTextureId);
+    }
+
+    void Render(const glm::mat4 &projection, const glm::mat4 &view, float dt)
+    {
+        
+        glDepthFunc(GL_LEQUAL); 
+        glUseProgram(shaderProgram);
+        glUniformMatrix4fv(uniformProj, 1, false, glm::value_ptr(projection));
+        glUniformMatrix4fv(uniformView, 1, false, glm::value_ptr(view));
+        glUniform3f(uniformColor, color.x, color.y,color.z);
+        glUniform1i(uniformUnderwater, underwater);
+        glUniform1f(uniformColorForce, colorForce);
+        glUniform1i(uniformTexture0, 0);
+
+        if (!underwater)
+         {
+            if (colorForce > 0.0f)
+            {
+                colorForce -= dt * 0.1f;
+             //   Log(0,"colorForce %f",colorForce);
+            }
+            color.set(0.5f,0.5f,0.5f); 
+         } else
+         {
+            color.set(fogColor.r/255.0f,fogColor.g/255.0f,fogColor.b/255.0f);
+         }
+   
+   
+        glBindVertexArray(VAO);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, defaultTextureId);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+         glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+        glBindVertexArray(0);
+        glDepthFunc(GL_LESS); 
+
+    
+    }
+
+
+    unsigned int VBO;
+    unsigned int VAO;
+
+    unsigned int shaderProgram;
+    unsigned int uniformProj;
+    unsigned int uniformView;
+    unsigned int uniformColor;
+    unsigned int uniformUnderwater;
+    unsigned int uniformColorForce;
+
+    unsigned int uniformTexture0;
+    unsigned int defaultTextureId;
+    Vector3 color;
+    float colorForce;
+    bool underwater;
+};
 
 struct WaterPlane
 {
@@ -297,21 +524,23 @@ struct WaterPlane
     uniformFogInfos = glGetUniformLocation(shaderProgram, "uFogInfos");
     uniformTime= glGetUniformLocation(shaderProgram, "time");
 
-    float x_tiles =4.0f;
-    float y_tiles =4.0f;
-    float texture_width = 1024.0f;  // Largura da textura original
-    float texture_height = 1024.0f;  // Altura da textura original
+    float x_tiles =8.0f;
+    float y_tiles =8.0f;
 
-    float W =SIZE  / x_tiles;  // Largura de cada tile em coordenadas de textura
-    float H =SIZE  / y_tiles;  // Altura de cada tile em coordenadas de textura
+    float size = SIZE * 2;
+
+    float W =size  / x_tiles;  // Largura de cada tile em coordenadas de textura
+    float H =size  / y_tiles;  // Altura de cada tile em coordenadas de textura
 
 
- float vertices[] = {
+ float vertices[] = 
+ {
+       
         // positions          // colors           // texture coords
-         SIZE,  1.1f, SIZE,   1.0f, 1.0f, 1.0f,0.4f,   W, H, // top right
-         SIZE,  1.1f, -SIZE,   1.0f, 1.0f, 1.0f,0.4f,   W, 0.0f, // bottom right
-        -SIZE,  1.1f, -SIZE,   1.0f, 1.0f, 1.0f,0.4f,   0.0f, 0.0f, // bottom left
-        -SIZE,  1.1f, SIZE,   1.0f, 1.0f, 1.0f,0.4f,   0.0f, H  // top left 
+         size,  1.1f, size,   1.0f, 1.0f, 1.0f,0.4f,   W, H, // top right
+         size,  1.1f, -size,   1.0f, 1.0f, 1.0f,0.4f,   W, 0.0f, // bottom right
+        -size,  1.1f, -size,   1.0f, 1.0f, 1.0f,0.4f,   0.0f, 0.0f, // bottom left
+        -size,  1.1f, size,   1.0f, 1.0f, 1.0f,0.4f,   0.0f, H  // top left 
     };
     unsigned int indices[] = 
     {  
@@ -411,6 +640,39 @@ struct WaterPlane
 };
 
 
+Vector3 voxelVerts[8] = 
+{
+     Vector3(0.0f, 0.0f, 0.0f),
+	 Vector3(1.0f, 0.0f, 0.0f),
+	 Vector3(1.0f, 1.0f, 0.0f),
+	 Vector3(0.0f, 1.0f, 0.0f),
+	 Vector3(0.0f, 0.0f, 1.0f),
+	 Vector3(1.0f, 0.0f, 1.0f),
+	 Vector3(1.0f, 1.0f, 1.0f),
+	 Vector3(0.0f, 1.0f, 1.0f),
+};
+
+
+
+int voxelTris[6][4] = 
+{
+      	// 0 1 2 2 1 3
+		{0, 3, 1, 2}, // Back Face
+ 		{5, 6, 4, 7}, // Front Face
+	    {3, 7, 2, 6}, // Top Face
+		{1, 5, 0, 4}, // Bottom Face
+		{4, 7, 0, 3}, // Left Face
+		{1, 2, 5, 6} // Right Face
+};
+
+Vector2 voxelUVs[4] = 
+{
+    Vector2 (0.0f, 1.0f),
+    Vector2 (0.0f, 0.0f),
+    Vector2 (1.0f, 1.0f),
+    Vector2 (1.0f, 0.0f)
+};
+
 struct InstanceData
 {   
 
@@ -429,57 +691,52 @@ struct InstanceData
             #version 320 es                       
             precision mediump float;           
             in vec3 pos;            
-            in vec2 uv;            
+            in vec2 uv;  
+            in vec3 normal;          
             in vec3 position;            
             out vec2 fragTexCoord;             
             out flat int textureIndex;   
+            out  vec3 fragNormal;
 
                  
             uniform mat4 vp;                  
             void main()                        
-            {                                  
+            {             
+                fragNormal = normal;                     
                 fragTexCoord = uv; 
                 gl_Position = vp * vec4(pos + position, 1.0); 
-                textureIndex = 1;
+                textureIndex = 0;
 
-                // if  ( position.y  > 12.0)
-                // {
-                //     textureIndex = 8;
-                // } else 
-                // {
-                //     if (position.y <= 1.0)
-                //         textureIndex = 3;
-                //     else if (position.y >= 2.0 && position.y <= 4.0)
-                //         textureIndex = 0;
-                    
+            if (position.y <= 0.0) 
+                {
+                    textureIndex = 4; // agua
+                   
+                } 
+                else if ((position.y > 0.0) && (position.y <= 1.0))
+                {
+                    textureIndex = 3; // Terra lama
+                   
+                } 
+                else if ((position.y > 1.0) && (position.y <= 12.0)) 
+                {
+                    textureIndex = 1; // terra com erva
+                } 
+                else 
+                {
+                    textureIndex = 2; // terra com erva
+                    if (normal.y == 1.0  && normal.x == 0.0 && normal.z == 0.0)
+                    {
+                        textureIndex = 0; // Se a normal for para cima, use a textura da terra
+                    }
 
-                // }
-
-              
-        if (position.y <= 0.0) 
-        {
-            textureIndex = 4; // Água
-        } else if (position.y <= 1.0) {
-            textureIndex = 3; // Terra
-        } else if (position.y <= 12.0) {
-            textureIndex = 1; 
-        } else 
-        {
-            textureIndex = 0; // Acima da altura 12, use textura padrão
-        }  
-
-
-
+                }  
+       
+     
             };)";
 
 
             const char *defaultFShaderCode =R"(
             #version 320 es      
-
-            #define FOGMODE_EXP 1.
-            #define FOGMODE_EXP2 2.
-            #define FOGMODE_LINEAR 3.
-            #define E 2.71828
 
 
 
@@ -487,21 +744,30 @@ struct InstanceData
             precision mediump float;           
 
 
+            #define FOGMODE_EXP 1.
+            #define FOGMODE_EXP2 2.
+            #define FOGMODE_LINEAR 3.
+            #define E 2.71828
+
             
 
-            in vec2 fragTexCoord;              
+            in vec2 fragTexCoord;     
+            in vec3 fragNormal;         
             in flat int  textureIndex;
             out vec4 finalColor;               
             uniform sampler2DArray texture0;    
 
 
+
             uniform vec4 uFogInfos;
             uniform vec3 uFogColor;
+            uniform vec3 uAmbientColor;
+
 
 
             float calcFogFactor() 
             {
-                // gets distance from camera to vertex
+
                 float fogDistance = gl_FragCoord.z / gl_FragCoord.w;
 
                 float fogCoeff = 1.0;
@@ -521,17 +787,32 @@ struct InstanceData
 
                 return clamp(fogCoeff, 0.0, 1.0);
             } 
+
+         
          
             void main()                        
             {                                  
                 vec4 texelColor = texture(texture0,  vec3(fragTexCoord.xy, textureIndex)); 
-
-
                 vec4 fog_color = texelColor;
-                float fog = calcFogFactor();
-                fog_color.rgb = fog * fog_color.rgb + (1.0 - fog) * uFogColor;
 
-                finalColor = fog_color;        
+
+                    vec3 normal = normalize(fragNormal);
+                    vec3 LightDirection = vec3(0.05, 0.6, 0.5);
+                    float ambientIntensity = max(0.0, dot(normal, LightDirection));
+
+                    vec3 ambientLight = vec3(0.6,0.6,0.6) * 0.2;
+
+
+                
+                float fog = calcFogFactor();
+                
+               // fog_color.rgb = fog * fog_color.rgb + (1.0 - fog) * uFogColor;
+
+                fog_color.rgb = fog * (texelColor.rgb + ambientLight) + (1.0 - fog) * uFogColor;
+
+
+
+                finalColor = fog_color;          
             };)";
 
     unsigned int vShaderId = 0;
@@ -555,102 +836,76 @@ struct InstanceData
         Log(2,"SHADER: Failed to load Instance shader");
     }
 
-float cubeVertices[] = 
+    std::vector<Vector3> vertices;
+    std::vector<Vector3> normals;
+    
+    std::vector<Vector2> uvs;
+    std::vector<unsigned int> triangles;
+    int vertexIndex = 0;
+    for (int p=0;p<6;p++)
+    {
+         
+
+            vertices.push_back( voxelVerts[voxelTris[p][0]]);
+            vertices.push_back( voxelVerts[voxelTris[p][1]]);
+            vertices.push_back( voxelVerts[voxelTris[p][2]]);
+            vertices.push_back( voxelVerts[voxelTris[p][3]]);
+             normals.push_back(Vector3(0.0f, 0.0f, 0.0f));
+              normals.push_back(Vector3(0.0f, 0.0f, 0.0f));
+               normals.push_back(Vector3(0.0f, 0.0f, 0.0f));
+                normals.push_back(Vector3(0.0f, 0.0f, 0.0f));
+
+       
+
+
+            uvs.push_back(Vector2(0, 1));
+            uvs.push_back(Vector2(0, 0));
+            uvs.push_back(Vector2(1, 1));
+            uvs.push_back(Vector2(1, 0));
+
+
+            triangles.push_back (vertexIndex);
+            triangles.push_back (vertexIndex + 1);
+            triangles.push_back (vertexIndex + 2);
+            triangles.push_back (vertexIndex + 2);
+            triangles.push_back (vertexIndex + 1);
+            triangles.push_back (vertexIndex + 3);
+            vertexIndex += 4;
+            
+        
+    }
+
+    // //calulate normals brute force
+    // for (int i = 0; i < (int)triangles.size(); i+=3)
+    // {
+    //     Vector3 v0 = vertices[triangles[i]];
+    //     Vector3 v1 = vertices[triangles[i+1]];
+    //     Vector3 v2 = vertices[triangles[i+2]];
+    //     Vector3 normal = (v1-v0).Cross(v2-v0).Normalized();
+    //     normals.push_back(normal);
+    //     normals.push_back(normal);
+    //     normals.push_back(normal);
+    // }
+
+
+    //smoth normals
+
+for (int i = 0; i < (int)triangles.size(); i+=3)
 {
-    // Face frontal
-   -0.5f, -0.5f,  0.5f,  // V0
-    0.5f, -0.5f,  0.5f,  // V1
-    0.5f,  0.5f,  0.5f,  // V2
-    0.5f,  0.5f,  0.5f,  // V3
-   -0.5f,  0.5f,  0.5f,  // V4
-   -0.5f, -0.5f,  0.5f,  // V5
-
-    // Face traseira
-   -0.5f, -0.5f, -0.5f,  // V6
-    0.5f, -0.5f, -0.5f,  // V7
-    0.5f,  0.5f, -0.5f,  // V8
-    0.5f,  0.5f, -0.5f,  // V9
-   -0.5f,  0.5f, -0.5f,  // V10
-   -0.5f, -0.5f, -0.5f,  // V11
-
-    // Face superior
-   -0.5f,  0.5f,  0.5f,  // V12
-    0.5f,  0.5f,  0.5f,  // V13
-    0.5f,  0.5f, -0.5f,  // V14
-    0.5f,  0.5f, -0.5f,  // V15
-   -0.5f,  0.5f, -0.5f,  // V16
-   -0.5f,  0.5f,  0.5f,  // V17
-
-    // Face inferior
-   -0.5f, -0.5f,  0.5f,  // V18
-    0.5f, -0.5f,  0.5f,  // V19
-    0.5f, -0.5f, -0.5f,  // V20
-    0.5f, -0.5f, -0.5f,  // V21
-   -0.5f, -0.5f, -0.5f,  // V22
-   -0.5f, -0.5f,  0.5f,  // V23
-
-    // Face direita
-    0.5f, -0.5f,  0.5f,  // V24
-    0.5f, -0.5f, -0.5f,  // V25
-    0.5f,  0.5f, -0.5f,  // V26
-    0.5f,  0.5f, -0.5f,  // V27
-    0.5f,  0.5f,  0.5f,  // V28
-    0.5f, -0.5f,  0.5f,  // V29
-
-    // Face esquerda
-   -0.5f, -0.5f,  0.5f,  // V30
-   -0.5f, -0.5f, -0.5f,  // V31
-   -0.5f,  0.5f, -0.5f,  // V32
-   -0.5f,  0.5f, -0.5f,  // V33
-   -0.5f,  0.5f,  0.5f,  // V34
-   -0.5f, -0.5f,  0.5f   // V35
-};
-
-float cubeUVs[] = 
+    Vector3 v0 = vertices[triangles[i]];
+    Vector3 v1 = vertices[triangles[i+1]];
+    Vector3 v2 = vertices[triangles[i+2]];
+    Vector3 normal = (v1-v0).Cross(v2-v0).Normalized();
+    normals[triangles[i]] += normal;
+    normals[triangles[i+1]] += normal;
+    normals[triangles[i+2]] += normal;
+} 
+for (int i = 0; i < (int)normals.size(); i++)
 {
-    0.0f, 0.0f,  // V0
-    1.0f, 0.0f,  // V1
-    1.0f, 1.0f,  // V2
-    1.0f, 1.0f,  // V3
-    0.0f, 1.0f,  // V4
-    0.0f, 0.0f,  // V5
+    normals[i] = normals[i].Normalized();
+}
 
-    0.0f, 0.0f,  // V6
-    1.0f, 0.0f,  // V7
-    1.0f, 1.0f,  // V8
-    1.0f, 1.0f,  // V9
-    0.0f, 1.0f,  // V10
-    0.0f, 0.0f,  // V11
-
-    0.0f, 0.0f,  // V12
-    1.0f, 0.0f,  // V13
-    1.0f, 1.0f,  // V14
-    1.0f, 1.0f,  // V15
-    0.0f, 1.0f,  // V16
-    0.0f, 0.0f,  // V17
-
-    0.0f, 0.0f,  // V18
-    1.0f, 0.0f,  // V19
-    1.0f, 1.0f,  // V20
-    1.0f, 1.0f,  // V21
-    0.0f, 1.0f,  // V22
-    0.0f, 0.0f,  // V23
-
-    0.0f, 0.0f,  // V24
-    1.0f, 0.0f,  // V25
-    1.0f, 1.0f,  // V26
-    1.0f, 1.0f,  // V27
-    0.0f, 1.0f,  // V28
-    0.0f, 0.0f,  // V29
-
-    0.0f, 0.0f,  // V30
-    1.0f, 0.0f,  // V31
-    1.0f, 1.0f,  // V32
-    1.0f, 1.0f,  // V33
-    0.0f, 1.0f,  // V34
-    0.0f, 0.0f   // V35
-};
-
+    count = triangles.size();
 
 
 
@@ -658,32 +913,47 @@ float cubeUVs[] =
     uniformTexture0 = glGetUniformLocation(instanceProgram, "texture0");
     uniformFogColor = glGetUniformLocation(instanceProgram, "uFogColor");
     uniformFogInfos = glGetUniformLocation(instanceProgram, "uFogInfos");
+  
 
 
     glGenVertexArrays(1, &VAO);
     glBindVertexArray(VAO);
     
-    glGenBuffers(3, VBO);
+    glGenBuffers(5, VBO);
     
     glBindBuffer(GL_ARRAY_BUFFER, VBO[0]);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size()  * sizeof(Vector3), vertices.data(), GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, 0, 0, 0);
 
 
 
     glBindBuffer(GL_ARRAY_BUFFER, VBO[1]);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(cubeUVs), cubeUVs, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, uvs.size() * sizeof(Vector2), uvs.data() , GL_STATIC_DRAW);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, 0, 0, 0);
 
 
 
+
     glBindBuffer(GL_ARRAY_BUFFER, VBO[2]);
-    glBufferData(GL_ARRAY_BUFFER, translations.size() * sizeof(Vector3) , translations.data(), GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, normals.size() * sizeof(Vector3), normals.data() , GL_STATIC_DRAW);
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 3, GL_FLOAT, 0, 0, 0);
-    glVertexAttribDivisor(2, 1);
+
+
+    glBindBuffer(GL_ARRAY_BUFFER, VBO[3]);
+    glBufferData(GL_ARRAY_BUFFER, translations.size() * sizeof(Vector3) , translations.data(), GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 3, GL_FLOAT, 0, 0, 0);
+    glVertexAttribDivisor(3, 1);
+
+
+
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, VBO[4]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, triangles.size() * sizeof(unsigned int), triangles.data(), GL_STATIC_DRAW);
+
 
 
 
@@ -697,10 +967,10 @@ float cubeUVs[] =
 
     }
 
-    void Free()
+    void Release()
     {
         glDeleteVertexArrays(1, &VAO);
-        glDeleteBuffers(3, VBO);
+        glDeleteBuffers(5, VBO);
         glDeleteProgram(instanceProgram);
         glDeleteTextures(1, &defaultTextureId);
     }
@@ -727,7 +997,7 @@ float cubeUVs[] =
         if (isDirty)
         {
             glBindVertexArray(VAO);
-            glBindBuffer(GL_ARRAY_BUFFER, VBO[2]);
+            glBindBuffer(GL_ARRAY_BUFFER, VBO[3]);
             glBufferData(GL_ARRAY_BUFFER, translations.size() * sizeof(Vector3) , translations.data(), GL_DYNAMIC_DRAW);
             glBindVertexArray(0);
             isDirty=false;
@@ -737,17 +1007,21 @@ float cubeUVs[] =
         glUniformMatrix4fv(uniformVP, 1, false, vp);
         glUniform1i(uniformTexture0, 0);
 
-//x type y start z end w density
-        glUniform4f(uniformFogInfos, 2.0, fogStart, fogEnd, fogDensity);
-        glUniform3f(uniformFogColor, fogColor.r/255.0f, fogColor.g/255.0f,fogColor.b/255.0f);   
-        
         glActiveTexture(GL_TEXTURE0);
         //glBindTexture(GL_TEXTURE_2D, defaultTextureId);
         glBindTexture(GL_TEXTURE_2D_ARRAY, defaultTextureId);
 
+  //x type y start z end w density
+        glUniform4f(uniformFogInfos, 2.0, fogStart, fogEnd, fogDensity);
+        glUniform3f(uniformFogColor, fogColor.r/255.0f, fogColor.g/255.0f,fogColor.b/255.0f);   
+      
 
         glBindVertexArray(VAO);
-        glDrawArraysInstanced(GL_TRIANGLES, 0, 36, translations.size());
+
+        glDrawElementsInstanced(GL_TRIANGLES, count, GL_UNSIGNED_INT, 0, translations.size());
+
+        
+      //  glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_INT, 0);
 
         //glDrawArrays(GL_TRIANGLES, 0, 36);
  
@@ -760,7 +1034,7 @@ float cubeUVs[] =
 
    
 
-    unsigned int VBO[3];
+    unsigned int VBO[5];
     unsigned int VAO;
     unsigned int instanceProgram ;
     unsigned int uniformVP;
@@ -768,6 +1042,7 @@ float cubeUVs[] =
     unsigned int uniformFogInfos;
     unsigned int uniformTexture0;
     unsigned int defaultTextureId;
+    int count;
     std::vector<Vector3> translations;
     bool isDirty;
 };
@@ -781,11 +1056,20 @@ struct Voxel
 
 InstanceData instances;
 
+float Distance(const Vector3 &a, const Vector3 &b)
+{
+    float dx = a.x - b.x;
+    float dz = a.z - b.z;
+    return sqrt(dx*dx + dz*dz);
+}
+
 struct Chunk
 {
     Chunk(const Vector3 &position)
     {
-        center = position;
+        this->position = position;
+        boundingBox.addInternalPoint(position);
+        visible = true;
     }
     ~Chunk()
     {
@@ -801,10 +1085,13 @@ struct Chunk
             voxel->position = position;
             voxel->color = color;
             voxels.push_back(voxel);
-            boundingBox.addInternalPoint(position);
+            boundingBox.addInternalPoint(position+Vector3(0.5,0.5,0.5));
+            boundingBox.addInternalPoint(position-Vector3(0.5,0.5,0.5));
+            
      
     }
 
+//test
     void Build()
     {
         
@@ -813,55 +1100,75 @@ struct Chunk
             Voxel *voxel = voxels[i];
             instances.Add(voxel->position);
         }
+        
       
     }
 
     void Render(RenderBatch &batch, const Vector3 &camera)
     {
-        //  float dist = center.Distance(camera);
-        //  if (dist > 1000)
-        //      return;
-
-        if (!frustum.BoundingBoxInView(boundingBox))
+        select = boundingBox.IsPointInBox(camera);
+        center = boundingBox.getCenter();
+        float distance = Distance(center,camera);
+        Color color = Color(255,255,255,255);
+        visible = true;
+        if (distance >  SIZE*4)
+        {
+            color = Color(255,0,0,255);
+            visible = false;
+        }
+        if (!frustum.BoundingBoxInView(boundingBox) || !visible)
             return;
      
         for (int i = 0; i < (int)voxels.size(); i++)
         {
             Voxel *voxel = voxels[i];
-           // batch.DrawCube(voxel->position, 1, 1, 1, voxel->color);
             instances.Add(voxel->position);
         }
-      //  batch.DrawBoundigBox(boundingBox, Color(255,255,255,255));
+        if (select)
+        {
+        float height = boundingBox.max.y - boundingBox.min.y;
+      //  batch.DrawCube(center, 1,height,1, color);
+       // batch.DrawBoundigBox(boundingBox,color);
+        }
     }
-
+  
     std::vector<Voxel*> voxels;
-    Vector3 center;  
+    int grid[CHUNK_SIZE][CHUNK_HEIGHT][CHUNK_SIZE];
+    Vector3 center; 
+    Vector3 position; 
     BoundingBox boundingBox;
-
+    bool visible;
+    bool select;
+ 
 };
+
+float Get2DPerlin (float x, float y, float offset, float scale) 
+{
+        return noise.GetNoise((x + 0.1f) / SIZE * scale + offset, (y + 0.1f) / SIZE * scale + offset);
+
+ }
+
+
+ float generateTerrainHeight(float x, float z)
+{
+    float scaledX = x * 2;
+    float scaledZ = z * 2;
+    float terrainHeight = noise.GetNoise(scaledX, scaledZ) ;
+    terrainHeight *= 20.0f;
+    int roundedHeight =10 + static_cast<int>(terrainHeight + 0.5f);
+    return roundedHeight;
+}
+
 
 struct World 
 {
 
     void Init()
     {
-          srand(time(0));
-	    int seed = rand() % __INT_MAX__;
-         
-        // noise.SetNoiseType(FastNoise::SimplexFractal);
-        // noise.SetFrequency(0.01);
-        // noise.SetFractalOctaves(4);
-        // noise.SetFractalLacunarity(2.0);
-        // noise.SetFractalGain(0.5);
-        // noise.SetSeed(seed);
-    
-
-    	noises = fnlCreateState();
-	    noises.noise_type = FNL_NOISE_PERLIN;
-	    noises.seed = seed;
-	    noises.fractal_type = FNL_FRACTAL_RIDGED;
         
-
+        
+        noise.SetNoiseType(FastNoiseLite::NoiseType_Perlin);
+        noise.SetSeed(seed);
 
 
 
@@ -884,6 +1191,13 @@ struct World
 
     void Generate(const Vector3 &position)
     {
+    int				power;
+	float			p;
+	float			cave;
+	float			height;
+	float			width;
+	float			biome;
+
         for (int x = (position.x-SIZE)/CHUNK_SIZE ; x < (position.x + SIZE)/CHUNK_SIZE; x++)
         {
             for (int z = (int)(position.z-SIZE)/CHUNK_SIZE; z < (position.z+ SIZE)/CHUNK_SIZE; z++)
@@ -898,50 +1212,31 @@ struct World
                         {
 
 
-                    float noise3d = fnlGetNoise2D(&noises, i + pos.x, j + pos.z);
-			        float value = round(CHUNK_SIZE * noise3d);
-
-                             //   float value = noise.GetNoise(i + pos.x, j + pos.z)  * CHUNK_SIZE;
-                            // float rawValue = noise.GetNoise(i + pos.x, j + pos.z) * CHUNK_SIZE;
-                            // int value = static_cast<int>(std::round(rawValue));
-
-                        
-
-                        //     float value = noise.GetNoise(i + pos.x, j + pos.z) * CHUNK_SIZE;
-                            // int value = static_cast<int>(std::round(rawValue));
+              
 
 
-                        // float scaleFactor = 1.0 ;
-                        // float scaledX = (i + pos.x) * scaleFactor;
-                        // float scaledZ = (j + pos.z) * scaleFactor;
+                                // float n1 = scale1 * noise.GetNoise(0.3f * ((float) (pos.x + i)) + 30310, 0.3f * ((float) (pos.z + j) + 3130));
+                                // float n2 = scale2 * noise.GetNoise(2.3f * ((float) (pos.x + i)) + 30310, 2.3f * ((float) (pos.z + j) + 3130));
+                                // float n3 = scale3 * noise.GetNoise(5.3f * ((float) (pos.x + i)) + 30310, 5.3f * ((float) (pos.z + j) + 3130));
+                                // float terrainHeight= abs(0.4 -  (n1 + n2 + n3 / 3.0f)) * (CHUNK_SIZE/4) * 2.5 ;
 
-                        // float rawValue = noise.GetNoise(scaledX, scaledZ) * CHUNK_SIZE;
-                        // int value = static_cast<int>(std::round(rawValue)) ;
+            
+                            //      float n1 = scale1 * noise.GetNoise(0.3f * ((float) (pos.x + i)) + 30310, 0.3f * ((float) (pos.z + j) + 3130));
+                            //      float n2 = scale2 * noise.GetNoise(2.3f * ((float) (pos.x + i)) + 30310, 2.3f * ((float) (pos.z + j) + 3130));
+                            //      float n3 = scale3 * noise.GetNoise(5.3f * ((float) (pos.x + i)) + 30310, 5.3f * ((float) (pos.z + j) + 3130));
 
-                       
-                              
+	                        //        float terrainHeight=-20 +  abs( 0.4 -  (n1 + n2 + n3 / 3.0f)) * (CHUNK_SIZE/4) * 8.5f ;
+                            //    //   terrainHeight *= 20.0f;
+                            //        int roundedHeight = static_cast<int>(terrainHeight + 0.5f);
 
 
 
-
-                                 //float value = noise.GetNoise( i + (x*CHUNK_SIZE), j + (z*CHUNK_SIZE)) ; 
-                                // float minRawValue = 0;
-                                // float maxRawValue = 1;
-
-                                // // //float normalizedValue = 2.0f * ((value - minRawValue) / (maxRawValue - minRawValue)) - 1.0f;
-                                // float normalizedValue = (value- minRawValue) / (maxRawValue - minRawValue);
-
-                                // value = normalizedValue * CHUNK_SIZE;
-                             //  float value =perlinNoiseGenerator.generateHeight(i + (x*CHUNK_SIZE), j + (z*CHUNK_SIZE));
+                                // Ajusta a altura garantindo que os cubos mantenham uma distância consistente
+                                float roundedHeight =generateTerrainHeight((pos.x + i),pos.z + j);//  normalizedNoise * 256;
 
                            
-                                Vector3 voxelPos((x*CHUNK_SIZE)+i, value, (z*CHUNK_SIZE)+j);
+                                Vector3 voxelPos((x*CHUNK_SIZE)+i, roundedHeight, (z*CHUNK_SIZE)+j);
                                 Color color;
-                                color.r = rand() % 255;
-                                color.g = rand() % 255;
-                                color.b = rand() % 255;
-                                color.a = 255;
-
                                 chunk->AddVoxel(voxelPos, color);
                             
                         }
@@ -975,9 +1270,8 @@ struct World
         Generate(camera);
         for (int i = 0; i < (int)chunks.size(); i++)
         {
-            
-            Chunk *chunk = chunks[i];
-            chunk->Render(batch, camera);
+              Chunk *chunk = chunks[i];
+              chunk->Render(batch, camera);
         }
         instances.Render(vp);
     }
@@ -990,15 +1284,29 @@ struct World
     }   
      std::vector<Chunk*> chunks;
      std::unordered_set<Vector3, Vector3Hash> vectorSet;
-     FastNoise noise;
+     
      Uint32 program;
      Uint32 vao;
     Uint32 vbo;
-    fnl_state noises;
+    
 
 };
 
+float clamp(float x, float lowerlimit, float upperlimit) 
+{
+    return std::min(upperlimit, std::max(x, lowerlimit));
+}
 
+float smoothstep(float edge0, float edge1, float x) 
+{
+    float t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+float lerp(float a, float b, float f) 
+{
+    return a + f * (b - a);
+}
 
 int main()
 {
@@ -1110,22 +1418,31 @@ int main()
     instances.Init();
 
 
-    batch.Init(8,MAX_BATCH_ELEMENTS);
-    batch3D.Init(8,MAX_BATCH_ELEMENTS);
+    batch.Init(2,1024);
+    batch3D.Init(4,2048);
 
     // SDL_SetRelativeMouseMode(SDL_TRUE);
 
 
 
-    WaterPlane water;
-    water.Init();
 
     World world;
     world.Init();
+    WaterPlane water;
+    water.Init();
     
 
-   // world.Generate(Vector3(0,0,0));
-    //world.Build();
+    world.Generate(Vector3(0,0,0));
+    // world.Generate(Vector3(0,0,32));
+    // world.Generate(Vector3(32,0,0));
+    // world.Generate(Vector3(32,0,32));
+    
+    
+
+   
+
+
+    world.Build();
 
  
     //instances.Add(Vector3(0,0,0));
@@ -1135,15 +1452,23 @@ int main()
 
 
 
-
+        SkyBox skybox;
+        skybox.Init();
     
 
     double lastTime = GetTime();
+    float fogWaterAdd=1.0f;
+    float fogWaterSub=1.0f;
     int frameCount = 0;
     double fps = 0.0;
+    bool onWater = false;
+    bool fogAnimated = false;
+
 
     while(Run())
     {
+
+        float deltaTime = GetTime() - lastTime;
 
         const Uint8 *state = SDL_GetKeyboardState(NULL);
 
@@ -1193,9 +1518,9 @@ int main()
 
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
-        glDisable(GL_CULL_FACE);
+        glEnable(GL_CULL_FACE);
 
-        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 1000.0f);
+        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, MAX_DISTANCE);
         glm::mat4 view = camera.GetViewMatrix();
         glm::mat4 model = glm::mat4(1.0f);
         glm::mat4 mvp = projection * view * model;  
@@ -1210,16 +1535,61 @@ int main()
 
         if (camera.Position.y <= 1.20)
         {   
+               onWater = true;
                 fogColor = fogWater;
-                fogDensity = 0.1;
-                fogStart = 10.0;
-        } else 
+              //  fogDensity = 0.1;
+                fogStart = 100.0;
+         } else 
         {
+            onWater = false;
             fogColor = fogDefaul;
-            fogDensity = 0.02;
-            fogStart = 200.0;
+           // fogDensity = 0.005;
+              fogStart = SIZE*2;
+
+
         }
             
+            if (onWater)
+            {
+               
+                    fogWaterSub=0.1f;
+                    if (fogWaterAdd<1.0f)
+                    {
+                        fogWaterAdd += deltaTime  * 0.05f;
+                        fogDensity = lerp(fogDensity,0.1,fogWaterAdd);
+                    } else
+                    {
+                        fogDensity = 0.1;
+                    } 
+     
+                    skybox.underwater=true;
+                    skybox.colorForce=1.0f;
+           
+                       
+                
+
+            } else 
+            {
+                  fogWaterAdd=0.0f;
+                  skybox.underwater=false;
+
+                
+              
+
+                if (fogWaterSub<1.0f)
+                {
+                    fogWaterSub += deltaTime  * 0.005f;
+                    fogDensity = lerp(fogDensity,0.005,fogWaterSub);
+         
+                } else 
+                {
+                    fogDensity = 0.005;
+           
+         
+                }
+               
+
+            }
 
 
  
@@ -1232,16 +1602,29 @@ int main()
 
 
 
-        world.Render(batch3D, position, glm::value_ptr(vp));
-         instances.Render(glm::value_ptr(vp));
+     //   world.Render(batch3D, position, glm::value_ptr(vp));
+       // instances.Render(glm::value_ptr(vp));
 
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-         water.Render(position, projection, view);
+
+       
+        float gridSize = (SIZE*2) * 0.5f;
+        int cellX = (int)(position.x / gridSize);
+        int cellZ = (int)(position.z / gridSize);
+        Vector3 waterPlanePosition = Vector3(cellX * gridSize + gridSize / 2.0f, 0, cellZ * gridSize + gridSize / 2.0f);
+      //  skybox.Render(projection, view);
+        world.Render(batch3D, position, glm::value_ptr(vp));
+
+
+
+        water.Render(waterPlanePosition, projection, view);
+        
+        
+        skybox.Render(projection, view, deltaTime);
 
          
-       // world.Render(batch3D, position, glm::value_ptr(vp));
-
+      
 
      //    batch3D.DrawCube(Vector3(0,0,0),1,1,1,Color(255,0,0,255));
         // batch3D.DrawCubeLines(Vector3(2,0,0),1,1,1,Color(0,255,0,255));
@@ -1274,7 +1657,7 @@ int main()
 
             
         
-            SDL_SetWindowTitle(window,TextFormat("FPS: %i %d (%f)",int(fps),(int)world.Count(),camera.Position.y));
+            SDL_SetWindowTitle(window,TextFormat("FPS: %i %d (%f)",int(fps),(int)world.Count(),deltaTime));
 
             frameCount = 0;
             lastTime = currentTime;
@@ -1287,9 +1670,11 @@ int main()
 
     }   
 
+    skybox.Free();
+
     water.Free();
     world.Free();
-    instances.Free();
+    instances.Release();
     texture.Release();
     
     batch.Release();
