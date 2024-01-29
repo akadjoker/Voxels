@@ -6,3 +6,7 @@ This project was made using:
     C++
     OpenGL
     SDL2
+
+
+# Some screenshots
+![anim](images/anim.gif)
